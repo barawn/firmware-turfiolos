@@ -68,6 +68,14 @@ module TURFIOLOS_TOP(
 		inout MTDO
     );
 	
+	parameter [3:0] VER_MONTH = 7;
+	parameter [7:0] VER_DAY = 7;
+	parameter [3:0] VER_MAJOR = 2;
+	parameter [3:0] VER_MINOR = 0;
+	parameter [7:0] VER_REV = 0;
+	parameter [3:0] VER_BOARDREV = 1;
+	parameter [31:0] VERSION = {VER_BOARDREV, VER_MONTH, VER_DAY, VER_MAJOR, VER_MINOR, VER_REV};
+	
 	wire bclk_to_bufg;
 	wire refclk_to_bufg;
 	wire pclk;
@@ -176,7 +184,7 @@ module TURFIOLOS_TOP(
 	////////////////////////////////////////////////////////////////////////////////
 	// TURFIO top-level module.
 	////////////////////////////////////////////////////////////////////////////////									  
-	TURFIOv3 u_turfio(.clk_i(pclk),
+	TURFIOv3 #(.VERSION(VERSION)) u_turfio(.clk_i(pclk),
 							.wr_i(tio_wr),
 							.dat_i(tio_dat_from_plx),
 							.dat_o(tio_dat_to_plx),
