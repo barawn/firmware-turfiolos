@@ -1,0 +1,132 @@
+This document details the v2 implementation of the TURFbus, the
+communication between the TURF and the TURFIO.
+
+Physical layer
+
+The TURFbus consists of an 8 bit bidirectional datapath, a chip select, a
+write/not read line, and a differential bus clock. The TURFIO is the master
+of the bus, and indicates when a transaction begins. The TURF drives the
+8 bit datapath only during read cycles, when the TURFIO frees the bus.
+
+Protocol
+
+The TURFbus interface consists of 32-bit words, with an 8-bit address
+space. When a transaction begins (indicated by nCSTURF going low),
+first the address is placed on the bus, and then the bits [7:0], [15:8],
+[23:16], and [31:0] are placed on the bus in subsequent cycles (i.e.
+low byte first). There are no wait states present - each transaction
+takes exactly 5 clock cycles.
+
+Implementation on the TURFIO
+
+On the TURFIO, a transaction is initiated from PCI by accessing the TURF
+address space. Registers are pushed into the IOBs for all lines: therefore
+it is important to remember that in a read, for instance, dat_i_turf_q
+is the data that *was* presented on the bus during the previous cycle.
+
+Therefore, for a read, the TURFIO drives nCSTURF/WnR/TURF_DIO, then
+tristates TURF_DIO at the beginning of the next cycle and does nothing
+for the remainder of that cycle (T_WAIT_WR0). During the next cycle (T_RD0)
+the low byte is present on dat_i_turf_q.
+
+For a write, the address is placed on the bus first (along with nCSTURF
+asserted) and then the 4 bytes of the transaction are placed on the bus
+in the subsequent cycles.
+
+Implementation on the TURF
+
+Note: The timing numbers here were obtained using a 'near-worst case' implementation
+of the TURFbus, which had all possible 256 32-bit registers used in the FPGA, implemented
+in fabric. The real implementation will likely meet these constraints with much more
+margin.
+
+The TURF watches for a transaction from the TURFIO by watching the latched
+version of nCSTURF (ncsturf_q). Again, since this is an IOB register, when
+ncsturf_q is 0, this means that nCSTURF was low on the *previous* cycle.
+
+Since there are no dead cycles in the TURFbus, the TURF takes ownership
+of the bus on the negative edge of the clock following ncsturf_q going low.
+This corresponds to 15 ns into cycle 2. The low byte of the data addressed
+is placed on the bus at the same time.
+
+Because of the tight timing constraint, the address output from the TURFbus
+is output from the interface module separately for a write and for a read.
+For a read, the address is available on turf_dio_q only during cycle 2
+(1 cycle after nCSTURF went low on the bus). Therefore the TURF has 15 ns
+to multiplex the low byte of its registers based on the TURFbus address.
+
+For a write, the address is captured and held until it is used at the
+end of the transaction.
+
+Timing budget
+
+The TURFbus clock is the PCI clock, forwarded through the TURFIO (TURFCLK_P).
+Therefore, the TURF sees a clock that is 4.372 ns behind the TURFIO.
+
+In order to guarantee positive delays from the TURF clock to the data output,
+SLOW slew drivers were used on the TURFIO outputs.
+
+To determine the setup/hold on the TURFIO outputs seen at the TURF,
+the following mechanism was implemented:
+
+1) Determine the minimum/maximum clock-to-out for TURFCLK_P/N.
+   Min/Max: 3.532/4.372 ns
+2) Determine the minimum/maximum clock-to-out for any of the
+   outputs.
+   Min/Max for:
+   nCSTURF = 6.503/7.344 ns
+   TURF_WnR = 6.504/7.344 ns
+   TURF_DIO<0> = 6.504/8.612 ns
+   TURF_DIO<1> = 6.504/8.612 ns
+   TURF_DIO<2> = 6.520/9.346 ns
+   TURF_DIO<3> = 6.520/9.047 ns
+   TURF_DIO<4> = 6.520/9.047 ns
+   TURF_DIO<5> = 6.520/9.047 ns
+   TURF_DIO<6> = 6.520/9.047 ns
+   TURF_DIO<7> = 6.520/9.047 ns
+3) Min clock to out is Min Signal - Max Clock
+   Max clock to out is Max Signal - Min Clock
+4) Setup at TURF is then 30 ns - Max clock to out
+   Valid at TURF is then (30 ns - Max clock to out) + Min clock to out.
+
+For instance, nCSTURF Max/Min is 2.131/3.812 ns. Therefore setup time would
+be 26.188 ns, and the valid time would be 28.319 ns.
+
+The min/max values were determined by adding a 'report only' constraint
+in the UCF, e.g.:
+
+TIMEGRP "TURFBUS_nCSTURF" OFFSET = OUT AFTER "BCLKO" RISING;
+
+for *every* output. This is the only reliable way to get min/max clock-to-outs
+for each net. The "REFERENCE_PIN" mechanism suggested in Xilinx's documentation
+does not work (it computes fastest/slowest paths for *both* the reference pin and the
+signal).
+
+Note that the 'report only' constraint mechanism does not work in the old version of ISE (10.1).
+
+The 'minimum' clock to out for the entire bus is 2.131 ns (nCSTURF).
+The 'maximum' clock to out for the entire bus is 9.346 ns (TURF_DIO<2>).
+
+Therefore a "global" setup/valid constraint would be
+
+TIMEGRP "TURFBUS" OFFSET = IN 20.654 ns VALID 22.785 ns BEFORE "TURFCLK_P" RISING;
+
+This timing constraint is met with very large slack on setup time (17.922 ns worst-case)
+and moderate slack on the hold time (1.214 ns). Therefore no DCM is needed either at the TURFIO
+or the TURF FPGA to meet timing.
+
+Note that the hold time slack is not met perfectly because the input flipflops are not completely
+packed into the IOB in all cases, since they are *also* used as the address demux, which can have
+an extremely large fanout.
+
+For the reverse case (TURF to TURFIO), we add the maximum clock to out for TURFCLK_P (4.372 ns),
+add the maximum clock to out (at the TURF) for TURF_DIO<7:0>, and add 15 ns, since the data is
+clocked out at the falling edge. Valid time is guaranteed to be less important here as the data is
+clocked out on the falling clock edge, so we simply list it as 15 ns (1/2 clock).
+
+The maximum clock to out for TURF_DIO<7:0> is 5.540 ns, so the final TURFIO constraint is
+
+TIMEGRP "TURFBUS" OFFSET = IN 7.215 ns VALID 15 ns BEFORE "BCLKO" RISING
+
+This constraint is met with good slack on the setup time (4.328 ns) and large slack on the hold time,
+as expected (8.127 ns), since the clock delay is shorter than the data path delay (by design).
